@@ -146,6 +146,9 @@ vlog_defs += -DDRAM_AXI_WIDTH_INTERLEAVED=${dram_axi_width_interleaved}
 ifeq (1, $(spm_profiling))
 	vlog_defs += -DSPM_PROFILING=$(spm_profiling)
 endif
+ifeq (1, $(noc_profiling))
+	vlog_defs += -DNOC_PROFILING=$(noc_profiling)
+endif
 ifeq (1, $(spm_bank_id_remap))
 	vlog_defs += -DSPM_BANK_ID_REMAP=$(spm_bank_id_remap)
 endif
@@ -238,7 +241,7 @@ $(buildpath)/$(dpi_library)/mempool_dpi.so: $(dpi)
 
 # Elaboration
 .PHONY: elabvcs
-elabvcs: dpivcs $(buildpath) $(buildpath)/compilevcs.sh update_opcodes
+elabvcs: gen_selector dpivcs $(buildpath) $(buildpath)/compilevcs.sh update_opcodes
 $(buildpath)/compilevcs.sh: $(bender) $(config_mk) Makefile $(MEMPOOL_DIR)/Bender.yml $(shell find {src,tb,deps} -type f)
 	$(bender) script vcs --vlogan-bin="$(vcs_cmd) vlogan" --vlog-arg="$(vlogan_args)" $(vlog_defs) -t rtl -t mempool_vsim > $(buildpath)/compilevcs.sh
 	echo "exit" >> $(buildpath)/compilevcs.sh
@@ -309,7 +312,7 @@ ifneq (${CLANG_PATH},)
   VERILATOR_FLAGS += -LDFLAGS "-L $(CLANG_PATH)/lib -Wl,-rpath,$(CLANG_PATH)/lib -lc++ -nostdlib++"
 endif
 
-$(VERILATOR_MK): $(VERILATOR_CONF) $(VERILATOR_WAIVE) $(MEMPOOL_DIR)/Bender.yml $(shell find {src,tb,deps} -type f) $(bender) $(config_mk) Makefile
+$(VERILATOR_MK): gen_selector $(VERILATOR_CONF) $(VERILATOR_WAIVE) $(MEMPOOL_DIR)/Bender.yml $(shell find {src,tb,deps} -type f) $(bender) $(config_mk) Makefile
 	rm -rf $(verilator_build); mkdir -p $(verilator_build)
 	# Overwrite Bootaddress to L2 base while we don't have a DPI to write a wake-up
 	$(eval boot_addr=$(l2_base))
