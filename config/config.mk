@@ -83,6 +83,9 @@ spm_bank_id_remap ?= 1
 # Enable tile id remapping inside of each group
 tile_id_remap ?= 1
 
+# Enable separating tile local interconnect into intra-tile and inter-tile
+separate_local_resp_interco ?= 1
+
 # Enable the spm access pattern profiling
 spm_profiling ?= 0
 

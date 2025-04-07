@@ -872,27 +872,104 @@ module mempool_tile
     .idx_o  (superbank_req_ini_addr                                 )
   );
 
-  stream_xbar #(
-    .NumInp   (NumBanksPerTile                                       ),
-    .NumOut   (NumCoresPerTile + NumRemoteRespPortsPerTile           ),
-    .payload_t(tcdm_slave_resp_t                                     )
-  ) i_local_resp_interco (
-    .clk_i  (clk_i                                                   ),
-    .rst_ni (rst_ni                                                  ),
-    .flush_i(1'b0                                                    ),
-    // External priority flag
-    .rr_i   ('0                                                      ),
-    // Master
-    .data_i (superbank_resp_payload                                  ),
-    .valid_i(superbank_resp_valid                                    ),
-    .ready_o(superbank_resp_ready                                    ),
-    .sel_i  (superbank_resp_ini_addr                                 ),
-    // Slave
-    .data_o ({prereg_tcdm_slave_resp, local_resp_interco_payload}    ),
-    .valid_o({prereg_tcdm_slave_resp_valid, local_resp_interco_valid}),
-    .ready_i({prereg_tcdm_slave_resp_ready, local_resp_interco_ready}),
-    .idx_o  (/* Unused */                                            )
-  );
+  generate
+    if (`SEPARATE_LOCAL_RESP_INTERCO) begin: gen_separate_local_resp_interco
+
+      logic                    [NumBanksPerTile-1:0] superbank_resp_to_intra_group_valid;
+      logic                    [NumBanksPerTile-1:0] superbank_resp_to_intra_group_ready;
+
+      logic                    [NumBanksPerTile-1:0] superbank_resp_to_inter_group_valid;
+      logic                    [NumBanksPerTile-1:0] superbank_resp_to_inter_group_ready;
+
+      logic                    [NumBanksPerTile-1:0] superbank_resp_to_inter_group_arb;
+
+      for (genvar b = 0; unsigned'(b) < NumBanksPerTile; b++) begin: gen_superbank_resp_demux
+        assign superbank_resp_to_inter_group_arb  [b] = superbank_resp_ini_addr[b] > NumCoresPerTile;
+        stream_demux #(
+          .N_OUP     (2)
+        ) i_superbank_resp_demux (
+          .inp_valid_i (superbank_resp_valid[b]),
+          .inp_ready_o (superbank_resp_ready[b]),
+          .oup_sel_i   (superbank_resp_to_inter_group_arb[b]),
+          .oup_valid_o ({superbank_resp_to_inter_group_valid[b], superbank_resp_to_intra_group_valid[b]}),
+          .oup_ready_i ({superbank_resp_to_inter_group_ready[b], superbank_resp_to_intra_group_ready[b]})
+        );
+      end
+
+      stream_xbar #(
+        .NumInp   (NumBanksPerTile                                       ),
+        .NumOut   (NumCoresPerTile + 1                                   ),
+        .payload_t(tcdm_slave_resp_t                                     )
+      ) i_local_resp_to_intra_group_interco (
+        .clk_i  (clk_i                                                   ),
+        .rst_ni (rst_ni                                                  ),
+        .flush_i(1'b0                                                    ),
+        // External priority flag
+        .rr_i   ('0                                                      ),
+        // Master
+        .data_i (superbank_resp_payload                                  ),
+        .valid_i(superbank_resp_to_intra_group_valid                     ),
+        .ready_o(superbank_resp_to_intra_group_ready                     ),
+        .sel_i  (superbank_resp_ini_addr                                 ),
+        // Slave
+        .data_o ({prereg_tcdm_slave_resp[0], local_resp_interco_payload}    ),
+        .valid_o({prereg_tcdm_slave_resp_valid[0], local_resp_interco_valid}),
+        .ready_i({prereg_tcdm_slave_resp_ready[0], local_resp_interco_ready}),
+        .idx_o  (/* Unused */                                            )
+      );
+
+      logic [NumBanksPerTile-1:0][$clog2(NumRemoteRespPortsPerTile-1)-1:0] superbank_resp_ini_addr_to_inter_group;
+      for(genvar b = 0; unsigned'(b) < NumBanksPerTile; b++) begin: gen_superbank_resp_ini_addr_to_inter_group
+        assign superbank_resp_ini_addr_to_inter_group[b] = superbank_resp_ini_addr[b] - (NumCoresPerTile + 1);
+      end
+
+      stream_xbar #(
+        .NumInp   (NumBanksPerTile                                       ),
+        .NumOut   (NumRemoteRespPortsPerTile - 1                         ),
+        .payload_t(tcdm_slave_resp_t                                     )
+      ) i_local_resp_to_inter_group_interco (
+        .clk_i  (clk_i                                                   ),
+        .rst_ni (rst_ni                                                  ),
+        .flush_i(1'b0                                                    ),
+        // External priority flag
+        .rr_i   ('0                                                      ),
+        // Master
+        .data_i (superbank_resp_payload                                  ),
+        .valid_i(superbank_resp_to_inter_group_valid                     ),
+        .ready_o(superbank_resp_to_inter_group_ready                     ),
+        .sel_i  (superbank_resp_ini_addr_to_inter_group                  ),
+        // Slave
+        .data_o (prereg_tcdm_slave_resp[NumRemoteRespPortsPerTile-1:1]      ),
+        .valid_o(prereg_tcdm_slave_resp_valid[NumRemoteRespPortsPerTile-1:1]),
+        .ready_i(prereg_tcdm_slave_resp_ready[NumRemoteRespPortsPerTile-1:1]),
+        .idx_o  (/* Unused */                                            )
+      );
+
+    end else begin: gen_shared_local_resp_interco
+
+      stream_xbar #(
+        .NumInp   (NumBanksPerTile                                       ),
+        .NumOut   (NumCoresPerTile + NumRemoteRespPortsPerTile           ),
+        .payload_t(tcdm_slave_resp_t                                     )
+      ) i_local_resp_interco (
+        .clk_i  (clk_i                                                   ),
+        .rst_ni (rst_ni                                                  ),
+        .flush_i(1'b0                                                    ),
+        // External priority flag
+        .rr_i   ('0                                                      ),
+        // Master
+        .data_i (superbank_resp_payload                                  ),
+        .valid_i(superbank_resp_valid                                    ),
+        .ready_o(superbank_resp_ready                                    ),
+        .sel_i  (superbank_resp_ini_addr                                 ),
+        // Slave
+        .data_o ({prereg_tcdm_slave_resp, local_resp_interco_payload}    ),
+        .valid_o({prereg_tcdm_slave_resp_valid, local_resp_interco_valid}),
+        .ready_i({prereg_tcdm_slave_resp_ready, local_resp_interco_ready}),
+        .idx_o  (/* Unused */                                            )
+      );
+    end
+  endgenerate
 
   /********************
    *   ID Remapping   *

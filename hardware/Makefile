@@ -181,6 +181,8 @@ vlog_defs += -DNOC_ROUTER_INPUT_FIFO_DEP=$(noc_router_input_fifo_dep)
 vlog_defs += -DNOC_ROUTER_OUTPUT_FIFO_DEP=$(noc_router_output_fifo_dep)
 # Router remapping group size
 vlog_defs += -DNOC_ROUTER_REMAP_GROUP_SIZE=$(noc_router_remap_group_size)
+# Separate tile local interconnect into intra-tile and inter-tile
+vlog_defs += -DSEPARATE_LOCAL_RESP_INTERCO=$(separate_local_resp_interco)
 
 # Traffic generation enabled
 ifdef tg
