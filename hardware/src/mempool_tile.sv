@@ -923,26 +923,50 @@ module mempool_tile
         assign superbank_resp_ini_addr_to_inter_group[b] = superbank_resp_ini_addr[b] - (NumCoresPerTile + 1);
       end
 
-      stream_xbar #(
-        .NumInp   (NumBanksPerTile                                       ),
-        .NumOut   (NumRemoteRespPortsPerTile - 1                         ),
-        .payload_t(tcdm_slave_resp_t                                     )
+      localparam int unsigned AgeMatrixNumEntries = NumBanksPerTile;
+      localparam int unsigned AgeMatrixNumEnq = NumRemoteReqPortsPerTile - 1;
+      localparam int unsigned AgeMatrixNumSel = NumRemoteRespPortsPerTile - 1;
+      
+      logic [AgeMatrixNumSel-1:0][AgeMatrixNumEntries-1:0] resp_arbiter_result_mask;
+
+      // stream_xbar #(
+      //   .NumInp   (NumBanksPerTile                                       ),
+      //   .NumOut   (NumRemoteRespPortsPerTile - 1                         ),
+      //   .payload_t(tcdm_slave_resp_t                                     )
+      // ) i_local_resp_to_inter_group_interco (
+      //   .clk_i  (clk_i                                                   ),
+      //   .rst_ni (rst_ni                                                  ),
+      //   .flush_i(1'b0                                                    ),
+      //   // External priority flag
+      //   .rr_i   ('0                                                      ),
+      //   // Master
+      //   .data_i (superbank_resp_payload                                  ),
+      //   .valid_i(superbank_resp_to_inter_group_valid                     ),
+      //   .ready_o(superbank_resp_to_inter_group_ready                     ),
+      //   .sel_i  (superbank_resp_ini_addr_to_inter_group                  ),
+      //   // Slave
+      //   .data_o (prereg_tcdm_slave_resp[NumRemoteRespPortsPerTile-1:1]      ),
+      //   .valid_o(prereg_tcdm_slave_resp_valid[NumRemoteRespPortsPerTile-1:1]),
+      //   .ready_i(prereg_tcdm_slave_resp_ready[NumRemoteRespPortsPerTile-1:1]),
+      //   .idx_o  (/* Unused */                                            )
+      // );
+
+      mempool_tile_resp_arbiter #(
+        .NumInp           (NumBanksPerTile              ),
+        .AgeMatrixNumEnq  (NumRemoteReqPortsPerTile - 1 ),
+        .NumOut           (NumRemoteRespPortsPerTile - 1),
+        .payload_t        (tcdm_slave_resp_t            )
       ) i_local_resp_to_inter_group_interco (
-        .clk_i  (clk_i                                                   ),
-        .rst_ni (rst_ni                                                  ),
-        .flush_i(1'b0                                                    ),
-        // External priority flag
-        .rr_i   ('0                                                      ),
-        // Master
-        .data_i (superbank_resp_payload                                  ),
-        .valid_i(superbank_resp_to_inter_group_valid                     ),
-        .ready_o(superbank_resp_to_inter_group_ready                     ),
-        .sel_i  (superbank_resp_ini_addr_to_inter_group                  ),
-        // Slave
-        .data_o (prereg_tcdm_slave_resp[NumRemoteRespPortsPerTile-1:1]      ),
-        .valid_o(prereg_tcdm_slave_resp_valid[NumRemoteRespPortsPerTile-1:1]),
-        .ready_i(prereg_tcdm_slave_resp_ready[NumRemoteRespPortsPerTile-1:1]),
-        .idx_o  (/* Unused */                                            )
+          .clk_i  (clk_i                                        ),
+          .rst_ni (rst_ni                                       ),
+
+          .data_i     (superbank_resp_payload                   ),
+          .valid_i    (superbank_resp_to_inter_group_valid      ),
+          .ready_o    (superbank_resp_to_inter_group_ready      ),
+
+          .data_o     (prereg_tcdm_slave_resp[NumRemoteRespPortsPerTile-1:1]),
+          .valid_o    (prereg_tcdm_slave_resp_valid[NumRemoteRespPortsPerTile-1:1]),
+          .ready_i    (prereg_tcdm_slave_resp_ready[NumRemoteRespPortsPerTile-1:1])
       );
 
     end else begin: gen_shared_local_resp_interco

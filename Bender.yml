@@ -40,6 +40,9 @@ sources:
   - hardware/src/selector.sv
   - hardware/src/mempool_tile_id_remapper.sv
   - hardware/src/mempool_group_tile_id_remapper.sv
+  - hardware/src/mempool_tile_resp_arbiter.sv
+  - hardware/src/mempool_tile_resp_select.sv
+  - hardware/src/age_matrix.sv
   # Level 1
   - hardware/src/mempool_tile.sv
   # Level 3
