@@ -39,6 +39,7 @@ def generate_crossbar(InNum, OutNum):
     inputs.append("input  logic [$clog2(InNum)-1:0] priority_i")
     outputs = [
         "output logic [OutNum-1:0][$clog2(InNum)-1:0] sel_inport_idx_o",
+        "output logic [OutNum-1:0]                    sel_inport_idx_vld_o",
         "output logic [InNum-1:0][$clog2(OutNum)-1:0] asn_outport_idx_o",
         "output logic [InNum-1:0]                     asn_outport_vld_o"
     ]
@@ -64,6 +65,7 @@ def generate_crossbar(InNum, OutNum):
 
     # Generate req_vector_i logic
     priority_logic = (
+        "assign sel_inport_idx_vld_o = sel_inport_idx_raw_vld ;\n"
         "assign req_vector_rotate = (priority_i == '0) ? req_vector_i :\n"
         "                           "
         "((req_vector_i << (InNum -priority_i)) | "

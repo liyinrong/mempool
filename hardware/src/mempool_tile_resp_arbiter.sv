@@ -25,8 +25,10 @@ module mempool_tile_resp_arbiter #(
 
   logic [AgeMatrixNumEnq-1:0] enq_fire;
   logic [AgeMatrixNumEnq-1:0] enq_empty;
-  logic [AgeMatrixNumEnq-1:0][cf_math_pkg::idx_width(NumInp)-1:0] enq_mask_idx;
+  logic [AgeMatrixNumEnq-1:0][cf_math_pkg::idx_width(NumInp)-1:0] req_mask_idx;
   logic [AgeMatrixNumEnq-1:0][NumInp-1:0] enq_mask;
+  logic [AgeMatrixNumEnq-1:0][NumInp-1:0] req_mask;
+  logic [AgeMatrixNumEnq-1:0]             req_mask_vld;
 
   logic deq_fire;
   logic [NumInp-1:0] deq_mask;
@@ -58,17 +60,26 @@ module mempool_tile_resp_arbiter #(
       .MODE(i % 2)
     ) i_lzc (
       .in_i(current_valid_new),
-      .cnt_o(enq_mask_idx[i]),
+      .cnt_o(req_mask_idx[i]),
       .empty_o(enq_empty[i])
     );
-
-    assign enq_mask[i] = (1 << enq_mask_idx[i]);
+    if (i%2 == 0) begin: gen_req_vld_mask_even
+      assign req_mask[i] = (1 << req_mask_idx[i]);
+    end else begin: gen_req_vld_mask_odd
+      logic [NumInp-1:0] req_vld_mask_tmp;
+      assign req_vld_mask_tmp = (1 << req_mask_idx[i]);
+      for (genvar j = 0; j < NumInp; j++) begin: gen_enq_mask_odd_inner
+        assign req_mask[i][j] = req_vld_mask_tmp[NumInp-1 - j];
+      end
+    end
+    assign enq_mask[i] = req_mask[i] & ~current_handshake;
 
     if (i == 0) begin
-      assign enq_fire[i] = ~enq_empty[i];
+      assign req_mask_vld[i]  = ~enq_empty[i];
     end else begin
-      assign enq_fire[i] = ~enq_empty[i] & ~(|(enq_mask[i] & enq_mask[i-1])); // don't choose the same idx as the previous ones
+      assign req_mask_vld[i]  = ~enq_empty[i] & ~(|(req_mask[i] & req_mask[i-1])); // don't choose the same idx as the previous ones
     end
+    assign enq_fire[i] = req_mask_vld[i] & |(enq_mask[i]);
   end
 
   assign deq_fire = |deq_mask;
@@ -98,32 +109,33 @@ module mempool_tile_resp_arbiter #(
   logic [NumOut+AgeMatrixNumEnq-1:0] combined_mask_valid;
   logic [NumOut+AgeMatrixNumEnq-1:0][NumInp-1:0] combined_mask;
 
-  logic [NumOut-1:0] selected_mask_valid;
-  logic [NumOut-1:0][NumInp-1:0] selected_mask;
-
   logic [NumOut-1:0][$clog2(NumOut+AgeMatrixNumEnq)-1:0] sel_inport_idx;
+  logic [NumOut-1:0]                                     sel_inport_idx_vld;
   logic [NumOut+AgeMatrixNumEnq-1:0][$clog2(NumOut)-1:0] asn_outport_idx;
   logic [NumOut+AgeMatrixNumEnq-1:0]                     asn_outport_vld;
 
-  assign combined_mask_valid = {enq_fire, age_matrix_result_mask_vld};
-  assign combined_mask       = {enq_mask, age_matrix_result_mask};
+  assign combined_mask_valid = {req_mask_vld, age_matrix_result_mask_vld};
+  assign combined_mask       = {req_mask, age_matrix_result_mask};
 
   mempool_tile_resp_select #(
     .InNum  (NumOut+AgeMatrixNumEnq),
     .OutNum (NumOut)
   ) i_mempool_tile_resp_select (
-    .req_vector_i       (combined_mask_valid),
-    .priority_i         ('0 ),
-    .sel_inport_idx_o   (sel_inport_idx     ),
-    .asn_outport_idx_o  (asn_outport_idx    ),
-    .asn_outport_vld_o  (asn_outport_vld    )
+    .req_vector_i         (combined_mask_valid),
+    .priority_i           ('0 ),
+    .sel_inport_idx_o     (sel_inport_idx     ),
+    .sel_inport_idx_vld_o (sel_inport_idx_vld ),
+    .asn_outport_idx_o    (asn_outport_idx    ),
+    .asn_outport_vld_o    (asn_outport_vld    )
   );
 
   logic [NumOut-1:0][NumInp-1:0] sel_inport_idx_sel_mask;
   logic [NumOut-1:0][$clog2(NumInp)-1:0] sel_inport_idx_sel_mask_bin;
+  logic [NumOut-1:0]             sel_inport_idx_sel_mask_vld;
   generate
     for (genvar i = 0; i < NumOut; i++) begin: gen_sel_inport_idx_sel_mask
-      assign sel_inport_idx_sel_mask[i] = combined_mask[sel_inport_idx[i]];
+      assign sel_inport_idx_sel_mask[i]     = combined_mask[sel_inport_idx[i]];
+      assign sel_inport_idx_sel_mask_vld[i] = sel_inport_idx_vld[i];
 
       onehot_to_bin #(
         .ONEHOT_WIDTH   (NumInp)
@@ -147,14 +159,15 @@ module mempool_tile_resp_arbiter #(
         .N_INP  ( NumInp  )
       ) i_stream_mux (
         .inp_data_i   ( data_i        ),
+        .inp_valid_i  ( valid_i & {NumInp{sel_inport_idx_sel_mask_vld[i]}} ),
         .inp_ready_o  ( mux_ready[i]  ),
         .inp_sel_i    ( sel_inport_idx_sel_mask_bin[i] ),
-        .oup_data_o   ( data_o[i]          ),
-        .oup_valid_o  ( valid_o[i] ),
-        .oup_ready_i  ( ready_i[i] )
+        .oup_data_o   ( data_o[i]     ),
+        .oup_valid_o  ( valid_o[i]    ),
+        .oup_ready_i  ( ready_i[i]    )
       );
       for (genvar j = 0; j < NumInp; j++) begin: gen_mux_ready_transpose
-        assign mux_ready_transpose[j][i] = mux_ready[i][j];
+        assign mux_ready_transpose[j][i] = mux_ready[i][j] & sel_inport_idx_sel_mask_vld[i];
       end
     end 
     for (genvar j = 0; j < NumInp; j++) begin: gen_mux_ready
