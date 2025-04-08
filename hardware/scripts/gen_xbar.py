@@ -32,7 +32,7 @@ def clog2(x):
 
 def generate_crossbar(InNum, OutNum):
     # module_name = f"selector_{InNum}to{OutNum}"
-    module_name = "selector"
+    module_name = "mempool_tile_resp_select"
 
     # Generate inputs and outputs
     inputs = ["input  logic [InNum-1:0] req_vector_i"]
