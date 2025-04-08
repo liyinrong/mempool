@@ -85,6 +85,106 @@ module mempool_tile_resp_arbiter #(
     assign enq_fire[i] = req_mask_vld[i] & |(enq_mask[i]);
   end
 
+  // request shift to let them be mapped to different output ports
+  logic [AgeMatrixNumEnq-1:0][NumInp-1:0] req_mask_reordered;
+  logic [AgeMatrixNumEnq-1:0]             req_mask_vld_reordered;
+  logic [$clog2(AgeMatrixNumEnq)-1:0]     req_mask_reorder_ptr_d, req_mask_reorder_ptr_q;
+  assign req_mask_reorder_ptr_d = req_mask_reorder_ptr_q + 1;
+  `FFL(req_mask_reorder_ptr_q, req_mask_reorder_ptr_d, 1'b1, '0)
+
+  generate
+    if (AgeMatrixNumEnq == 1) begin: gen_req_mask_reorder_1
+      assign req_mask_reordered = req_mask;
+      assign req_mask_vld_reordered = req_mask_vld;
+    end else if (AgeMatrixNumEnq == 2) begin: gen_req_mask_reorder_2
+      always_comb begin
+        case (req_mask_reorder_ptr_q)
+          1'b1: begin
+            req_mask_reordered[0]  = req_mask[1];
+            req_mask_reordered[1]  = req_mask[0];
+
+            req_mask_vld_reordered[0]  = req_mask_vld[1];
+            req_mask_vld_reordered[1]  = req_mask_vld[0];
+          end
+          default: begin
+            req_mask_reordered      = req_mask;
+            req_mask_vld_reordered  = req_mask_vld;
+          end
+        endcase
+      end
+    end else begin: gen_req_mask_reorder_error
+      $fatal("AgeMatrixNumEnq > 2, this is not supported yet by the age matrix.");
+    end
+  endgenerate
+
+
+  logic [NumOut-1:0][NumInp-1:0] age_matrix_result_mask_reordered;
+  logic [NumOut-1:0]             age_matrix_result_mask_vld_reordered;
+  logic [$clog2(NumOut)-1:0]     age_matrix_result_mask_reorder_ptr_d, age_matrix_result_mask_reorder_ptr_q;
+  assign age_matrix_result_mask_reorder_ptr_d = age_matrix_result_mask_reorder_ptr_q + 1;
+  `FFL(age_matrix_result_mask_reorder_ptr_q, age_matrix_result_mask_reorder_ptr_d, 1'b1, '0)
+
+  generate
+    if (NumOut == 1) begin: gen_age_matrix_result_mask_reorder_1
+      assign age_matrix_result_mask_reordered = age_matrix_result_mask;
+      assign age_matrix_result_mask_vld_reordered = age_matrix_result_mask_vld;
+    end else if (NumOut == 2) begin: gen_age_matrix_result_mask_reorder_2
+      always_comb begin
+        case (age_matrix_result_mask_reorder_ptr_q)
+          1'b1: begin
+            age_matrix_result_mask_reordered[0]  = age_matrix_result_mask[1];
+            age_matrix_result_mask_reordered[1]  = age_matrix_result_mask[0];
+
+            age_matrix_result_mask_vld_reordered[0]  = age_matrix_result_mask_vld[1];
+            age_matrix_result_mask_vld_reordered[1]  = age_matrix_result_mask_vld[0];
+          end
+          default: begin
+            age_matrix_result_mask_reordered      = age_matrix_result_mask;
+            age_matrix_result_mask_vld_reordered  = age_matrix_result_mask_vld;
+          end
+        endcase
+      end
+    end else if ((NumOut == 3)) begin: gen_age_matrix_result_mask_reorder_3
+      always_comb begin
+        case (age_matrix_result_mask_reorder_ptr_q)
+          2'b00: begin
+            age_matrix_result_mask_reordered[0]  = age_matrix_result_mask[1];
+            age_matrix_result_mask_reordered[1]  = age_matrix_result_mask[2];
+            age_matrix_result_mask_reordered[2]  = age_matrix_result_mask[0];
+
+            age_matrix_result_mask_vld_reordered[0]  = age_matrix_result_mask_vld[1];
+            age_matrix_result_mask_vld_reordered[1]  = age_matrix_result_mask_vld[2];
+            age_matrix_result_mask_vld_reordered[2]  = age_matrix_result_mask_vld[0];
+          end
+          2'b01: begin
+            age_matrix_result_mask_reordered[0]  = age_matrix_result_mask[2];
+            age_matrix_result_mask_reordered[1]  = age_matrix_result_mask[0];
+            age_matrix_result_mask_reordered[2]  = age_matrix_result_mask[1];
+
+            age_matrix_result_mask_vld_reordered[0]  = age_matrix_result_mask_vld[2];
+            age_matrix_result_mask_vld_reordered[1]  = age_matrix_result_mask_vld[0];
+            age_matrix_result_mask_vld_reordered[2]  = age_matrix_result_mask_vld[1];
+          end
+          2'b10: begin
+            age_matrix_result_mask_reordered[0]  = age_matrix_result_mask[2];
+            age_matrix_result_mask_reordered[1]  = age_matrix_result_mask[1];
+            age_matrix_result_mask_reordered[2]  = age_matrix_result_mask[0];
+
+            age_matrix_result_mask_vld_reordered[0]  = age_matrix_result_mask_vld[2];
+            age_matrix_result_mask_vld_reordered[1]  = age_matrix_result_mask_vld[1];
+            age_matrix_result_mask_vld_reordered[2]  = age_matrix_result_mask_vld[0];
+          end
+          default: begin
+            age_matrix_result_mask_reordered      = age_matrix_result_mask;
+            age_matrix_result_mask_vld_reordered  = age_matrix_result_mask_vld;
+          end
+        endcase
+      end
+    end else begin: gen_age_matrix_result_mask_reorder_error
+      $fatal("NumOut > 3, this is not supported yet by the age matrix.");
+    end
+  endgenerate
+
   mux_onehot #(
       .InputWidth(AgeMatrixNumEnq),
       .DataWidth (NumInp)
@@ -126,8 +226,8 @@ module mempool_tile_resp_arbiter #(
   logic [NumOut+AgeMatrixNumEnq-1:0][$clog2(NumOut)-1:0] asn_outport_idx;
   logic [NumOut+AgeMatrixNumEnq-1:0]                     asn_outport_vld;
 
-  assign combined_mask_valid = {req_mask_vld, age_matrix_result_mask_vld};
-  assign combined_mask       = {req_mask, age_matrix_result_mask};
+  assign combined_mask_valid = {req_mask_vld_reordered, age_matrix_result_mask_vld_reordered};
+  assign combined_mask       = {req_mask_reordered, age_matrix_result_mask_reordered};
 
   // logic [$clog2(NumOut+AgeMatrixNumEnq)-1:0] priority_shift_q, priority_shift_d;
   // assign priority_shift_d = priority_shift_q < (NumOut+AgeMatrixNumEnq-1) ? priority_shift_q + 1 : '0;
