@@ -233,7 +233,7 @@ update-floogen:
 
 # Compilation
 .PHONY: gen_selector
-gen_selector: scripts/gen_xbar.py
+gen_selector: scripts/gen_xbar_random.py
 	# $< -in ${num_cores_per_tile} -on $$(($(num_remote_ports_per_tile) - 1)) -o src/selector.sv
 	$< -in $$(($(noc_req_rd_channel_num) + $(noc_req_rdwr_channel_num) + $(noc_req_wr_channel_num) + $(noc_resp_channel_num))) \
 	-on ${noc_resp_channel_num} -o src/mempool_tile_resp_select.sv

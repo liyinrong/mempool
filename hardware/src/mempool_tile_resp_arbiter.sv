@@ -129,11 +129,15 @@ module mempool_tile_resp_arbiter #(
   assign combined_mask_valid = {req_mask_vld, age_matrix_result_mask_vld};
   assign combined_mask       = {req_mask, age_matrix_result_mask};
 
+  // logic [$clog2(NumOut+AgeMatrixNumEnq)-1:0] priority_shift_q, priority_shift_d;
+  // assign priority_shift_d = priority_shift_q < (NumOut+AgeMatrixNumEnq-1) ? priority_shift_q + 1 : '0;
+  // `FFL(priority_shift_q, priority_shift_d, 1'b1, '0)
   mempool_tile_resp_select #(
     .InNum  (NumOut+AgeMatrixNumEnq),
     .OutNum (NumOut)
   ) i_mempool_tile_resp_select (
     .req_vector_i         (combined_mask_valid),
+    // .priority_i           (priority_shift_q   ),
     .priority_i           ('0 ),
     .sel_inport_idx_o     (sel_inport_idx     ),
     .sel_inport_idx_vld_o (sel_inport_idx_vld ),
