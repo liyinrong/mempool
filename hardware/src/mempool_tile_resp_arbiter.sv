@@ -20,7 +20,9 @@ module mempool_tile_resp_arbiter #(
 
   logic [NumInp-1:0] current_valid_new, current_valid_old;
   logic [NumInp-1:0] current_handshake;
-  
+
+  logic [NumInp-1:0] req_mask_combined_limited_2_new_req; // limit the max new req per cycle to 2
+
   logic [NumInp-1:0] new_valid_d, new_valid_q, new_valid_d_set, new_valid_d_clr, new_valid_d_en;
 
   logic [AgeMatrixNumEnq-1:0] enq_fire;
@@ -43,8 +45,8 @@ module mempool_tile_resp_arbiter #(
 
   // generate the new_valid_q signal, which marks if the valid is new one (which should enqueue age matrix if not hsk) or not
   assign new_valid_d_en   = new_valid_d_set | new_valid_d_clr;
-  assign new_valid_d_set  = valid_i & ready_o;
-  assign new_valid_d_clr  = valid_i & ~ready_o;
+  assign new_valid_d_set  = req_mask_combined_limited_2_new_req & ready_o;
+  assign new_valid_d_clr  = req_mask_combined_limited_2_new_req & ~ready_o;
   assign new_valid_d      = (new_valid_q | new_valid_d_set) & ~new_valid_d_clr;
 
   for (genvar b = 0; b < NumInp; b++) begin
@@ -157,8 +159,7 @@ module mempool_tile_resp_arbiter #(
   endgenerate
 
 
-  logic [NumInp-1:0] req_mask_combined_limited_2_new_req; // limit the max new req per cycle to 2
-  assign req_mask_combined_limited_2_new_req = ~(current_valid_new & ~ req_mask_combined) & valid_i;
+  assign req_mask_combined_limited_2_new_req = ~(current_valid_new & ~req_mask_combined) & valid_i;
 
 
   // data mux
