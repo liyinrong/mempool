@@ -29,6 +29,7 @@ module mempool_tile_resp_arbiter #(
   logic [AgeMatrixNumEnq-1:0][NumInp-1:0] enq_mask;
   logic [AgeMatrixNumEnq-1:0][NumInp-1:0] req_mask;
   logic [AgeMatrixNumEnq-1:0]             req_mask_vld;
+  logic [NumInp-1:0]                      req_mask_combined;
 
   logic deq_fire;
   logic [NumInp-1:0] deq_mask;
@@ -51,7 +52,7 @@ module mempool_tile_resp_arbiter #(
   end
 
   if(AgeMatrixNumEnq > 2) begin
-    $warning("AgeMatrixNumEnq > 2, this is not supported yet by the age matrix.");
+    $fatal("AgeMatrixNumEnq > 2, this is not supported yet by the age matrix.");
   end
 
   for (genvar i = 0; i < AgeMatrixNumEnq; i++) begin: gen_enq_fire
@@ -81,6 +82,15 @@ module mempool_tile_resp_arbiter #(
     end
     assign enq_fire[i] = req_mask_vld[i] & |(enq_mask[i]);
   end
+
+  mux_onehot #(
+      .InputWidth(AgeMatrixNumEnq),
+      .DataWidth (NumInp)
+  ) i_req_mask_combined_mux_onehot (
+      .sel_i ('1),
+      .data_i(req_mask),
+      .data_o(req_mask_combined)
+  );
 
   assign deq_fire = |deq_mask;
   assign deq_mask = current_handshake & ~new_valid_q;
@@ -147,6 +157,8 @@ module mempool_tile_resp_arbiter #(
   endgenerate
 
 
+  logic [NumInp-1:0] req_mask_combined_limited_2_new_req; // limit the max new req per cycle to 2
+  assign req_mask_combined_limited_2_new_req = ~(current_valid_new & ~ req_mask_combined) & valid_i;
 
 
   // data mux
@@ -159,7 +171,7 @@ module mempool_tile_resp_arbiter #(
         .N_INP  ( NumInp  )
       ) i_stream_mux (
         .inp_data_i   ( data_i        ),
-        .inp_valid_i  ( valid_i & {NumInp{sel_inport_idx_sel_mask_vld[i]}} ),
+        .inp_valid_i  ( req_mask_combined_limited_2_new_req & {NumInp{sel_inport_idx_sel_mask_vld[i]}} ),
         .inp_ready_o  ( mux_ready[i]  ),
         .inp_sel_i    ( sel_inport_idx_sel_mask_bin[i] ),
         .oup_data_o   ( data_o[i]     ),
@@ -171,7 +183,7 @@ module mempool_tile_resp_arbiter #(
       end
     end 
     for (genvar j = 0; j < NumInp; j++) begin: gen_mux_ready
-      assign ready_o[j] = |mux_ready_transpose[j];
+      assign ready_o[j] = (|mux_ready_transpose[j]) & req_mask_combined_limited_2_new_req[j];
     end
   endgenerate
 
