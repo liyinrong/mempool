@@ -39,6 +39,9 @@ module mempool_tile_resp_arbiter #(
   logic [NumOut-1:0] age_matrix_result_mask_vld;
   logic [NumOut-1:0][NumInp-1:0] age_matrix_result_mask;
 
+  logic [NumOut-1:0] outport_hsk;
+  assign outport_hsk = valid_o & ready_i;
+
   assign current_handshake = valid_i & ready_o;
   assign current_valid_new = valid_i & new_valid_q;
   assign current_valid_old = valid_i & ~new_valid_q;
@@ -98,7 +101,7 @@ module mempool_tile_resp_arbiter #(
       assign req_mask_vld_reordered = req_mask_vld;
     end else if (AgeMatrixNumEnq == 2) begin: gen_req_mask_reorder_2
       always_comb begin
-        case (req_mask_reorder_ptr_q)
+        unique case (req_mask_reorder_ptr_q)
           1'b1: begin
             req_mask_reordered[0]  = req_mask[1];
             req_mask_reordered[1]  = req_mask[0];
@@ -130,7 +133,7 @@ module mempool_tile_resp_arbiter #(
       assign age_matrix_result_mask_vld_reordered = age_matrix_result_mask_vld;
     end else if (NumOut == 2) begin: gen_age_matrix_result_mask_reorder_2
       always_comb begin
-        case (age_matrix_result_mask_reorder_ptr_q)
+        unique case (age_matrix_result_mask_reorder_ptr_q)
           1'b1: begin
             age_matrix_result_mask_reordered[0]  = age_matrix_result_mask[1];
             age_matrix_result_mask_reordered[1]  = age_matrix_result_mask[0];
@@ -146,7 +149,7 @@ module mempool_tile_resp_arbiter #(
       end
     end else if ((NumOut == 3)) begin: gen_age_matrix_result_mask_reorder_3
       always_comb begin
-        case (age_matrix_result_mask_reorder_ptr_q)
+        unique case (age_matrix_result_mask_reorder_ptr_q)
           2'b00: begin
             age_matrix_result_mask_reordered[0]  = age_matrix_result_mask[1];
             age_matrix_result_mask_reordered[1]  = age_matrix_result_mask[2];
@@ -229,9 +232,11 @@ module mempool_tile_resp_arbiter #(
   assign combined_mask_valid = {req_mask_vld_reordered, age_matrix_result_mask_vld_reordered};
   assign combined_mask       = {req_mask_reordered, age_matrix_result_mask_reordered};
 
-  // logic [$clog2(NumOut+AgeMatrixNumEnq)-1:0] priority_shift_q, priority_shift_d;
-  // assign priority_shift_d = priority_shift_q < (NumOut+AgeMatrixNumEnq-1) ? priority_shift_q + 1 : '0;
-  // `FFL(priority_shift_q, priority_shift_d, 1'b1, '0)
+`define ADAPTIVE_REQ_OUTPORT_ALLOC
+`ifndef ADAPTIVE_REQ_OUTPORT_ALLOC
+  logic [$clog2(NumOut+AgeMatrixNumEnq)-1:0] priority_shift_q, priority_shift_d;
+  assign priority_shift_d = priority_shift_q < (NumOut+AgeMatrixNumEnq-1) ? priority_shift_q + 1 : '0;
+  `FFL(priority_shift_q, priority_shift_d, 1'b1, '0)
   mempool_tile_resp_select #(
     .InNum  (NumOut+AgeMatrixNumEnq),
     .OutNum (NumOut)
@@ -244,6 +249,133 @@ module mempool_tile_resp_arbiter #(
     .asn_outport_idx_o    (asn_outport_idx    ),
     .asn_outport_vld_o    (asn_outport_vld    )
   );
+`else
+  // assign valid requests to ready output ports
+  logic [NumOut-1:0][$clog2(NumOut+AgeMatrixNumEnq)-1:0] sel_inport_idx_tmp;
+  logic [NumOut-1:0]                                     sel_inport_idx_vld_tmp;
+  always_comb begin
+    sel_inport_idx_vld_tmp = '0;
+    sel_inport_idx_tmp     = '0;
+    for (int i = 0; i < (NumOut+AgeMatrixNumEnq); i++) begin
+      if (combined_mask_valid[i] == 1'b1) begin
+        for (int j = 0; j < NumOut; j++) begin
+          if (ready_i[j] == 1'b1) begin
+            if (sel_inport_idx_vld_tmp[j] == 1'b0) begin
+              sel_inport_idx_tmp[j]     = i;
+              sel_inport_idx_vld_tmp[j] = 1'b1;
+              break;
+            end
+          end
+        end
+      end
+    end
+  end
+  // reorder the output port index to avoid fixed priority
+  logic [5-1:0] priority_outport_idx_d, priority_outport_idx_q;
+  `FFL(priority_outport_idx_q, priority_outport_idx_d, 1'b1, '0)
+  assign priority_outport_idx_d = priority_outport_idx_q < ((1<<5)-1) ? priority_outport_idx_q + 1 : '0;
+  if (NumOut == 1) begin: gen_priority_outport_idx_1
+    assign sel_inport_idx     = sel_inport_idx_tmp;
+    assign sel_inport_idx_vld = sel_inport_idx_vld_tmp;
+  end else if (NumOut == 2) begin: gen_priority_outport_idx_2
+    always_comb begin
+      sel_inport_idx     = '0;
+      sel_inport_idx_vld = '0;
+      unique case (priority_outport_idx_q[0])
+        1'b1: begin
+          sel_inport_idx[0]     = sel_inport_idx_tmp[1];
+          sel_inport_idx_vld[0] = sel_inport_idx_vld_tmp[1];
+          sel_inport_idx[1]     = sel_inport_idx_tmp[0];
+          sel_inport_idx_vld[1] = sel_inport_idx_vld_tmp[0];
+        end
+        default: begin
+          sel_inport_idx     = sel_inport_idx_tmp;
+          sel_inport_idx_vld = sel_inport_idx_vld_tmp;
+        end
+      endcase
+    end
+  end else if (NumOut == 3) begin: gen_priority_outport_idx_3
+    localparam int unsigned HASH_BIN = 6; // permutation(NumOut, NumOut)
+    logic [5-1:0] hash_out;
+    assign hash_out = mempool_pkg::fair_hash(priority_outport_idx_q);
+    always_comb begin
+      sel_inport_idx     = '0;
+      sel_inport_idx_vld = '0;
+      unique if ((hash_out >= 0) && (hash_out < HASH_BIN * 1)) begin
+        sel_inport_idx[0]     = sel_inport_idx_tmp[0];
+        sel_inport_idx_vld[0] = sel_inport_idx_vld_tmp[0];
+        sel_inport_idx[1]     = sel_inport_idx_tmp[2];
+        sel_inport_idx_vld[1] = sel_inport_idx_vld_tmp[2];
+        sel_inport_idx[2]     = sel_inport_idx_tmp[1];
+        sel_inport_idx_vld[2] = sel_inport_idx_vld_tmp[1];
+      end else if ((hash_out >= HASH_BIN * 1) && (hash_out < HASH_BIN * 2)) begin
+        sel_inport_idx[0]     = sel_inport_idx_tmp[1];
+        sel_inport_idx_vld[0] = sel_inport_idx_vld_tmp[1];
+        sel_inport_idx[1]     = sel_inport_idx_tmp[2];
+        sel_inport_idx_vld[1] = sel_inport_idx_vld_tmp[2];
+        sel_inport_idx[2]     = sel_inport_idx_tmp[0];
+        sel_inport_idx_vld[2] = sel_inport_idx_vld_tmp[0];
+      end else if ((hash_out >= HASH_BIN * 2) && (hash_out < HASH_BIN * 3)) begin
+        sel_inport_idx[0]     = sel_inport_idx_tmp[2];
+        sel_inport_idx_vld[0] = sel_inport_idx_vld_tmp[2];
+        sel_inport_idx[1]     = sel_inport_idx_tmp[0];
+        sel_inport_idx_vld[1] = sel_inport_idx_vld_tmp[0];
+        sel_inport_idx[2]     = sel_inport_idx_tmp[1];
+        sel_inport_idx_vld[2] = sel_inport_idx_vld_tmp[1];
+      end else if ((hash_out >= HASH_BIN * 3) && (hash_out < HASH_BIN * 4)) begin
+        sel_inport_idx[0]     = sel_inport_idx_tmp[2];
+        sel_inport_idx_vld[0] = sel_inport_idx_vld_tmp[2];
+        sel_inport_idx[1]     = sel_inport_idx_tmp[1];
+        sel_inport_idx_vld[1] = sel_inport_idx_vld_tmp[1];
+        sel_inport_idx[2]     = sel_inport_idx_tmp[0];
+        sel_inport_idx_vld[2] = sel_inport_idx_vld_tmp[0];
+      end else if ((hash_out >= HASH_BIN * 4) && (hash_out < HASH_BIN * 5)) begin
+        sel_inport_idx[0]     = sel_inport_idx_tmp[1];
+        sel_inport_idx_vld[0] = sel_inport_idx_vld_tmp[1];
+        sel_inport_idx[1]     = sel_inport_idx_tmp[0];
+        sel_inport_idx_vld[1] = sel_inport_idx_vld_tmp[0];
+        sel_inport_idx[2]     = sel_inport_idx_tmp[2];
+        sel_inport_idx_vld[2] = sel_inport_idx_vld_tmp[2];
+      end else begin
+        // default case
+        sel_inport_idx     = sel_inport_idx_tmp;
+        sel_inport_idx_vld = sel_inport_idx_vld_tmp;
+      end
+      // unique case (priority_outport_idx_q)
+      //   2'b00: begin
+      //     sel_inport_idx[0]     = sel_inport_idx_tmp[1];
+      //     sel_inport_idx_vld[0] = sel_inport_idx_vld_tmp[1];
+      //     sel_inport_idx[1]     = sel_inport_idx_tmp[2];
+      //     sel_inport_idx_vld[1] = sel_inport_idx_vld_tmp[2];
+      //     sel_inport_idx[2]     = sel_inport_idx_tmp[0];
+      //     sel_inport_idx_vld[2] = sel_inport_idx_vld_tmp[0];
+      //   end
+      //   2'b01: begin
+      //     sel_inport_idx[0]     = sel_inport_idx_tmp[1];
+      //     sel_inport_idx_vld[0] = sel_inport_idx_vld_tmp[1];
+      //     sel_inport_idx[1]     = sel_inport_idx_tmp[0];
+      //     sel_inport_idx_vld[1] = sel_inport_idx_vld_tmp[0];
+      //     sel_inport_idx[2]     = sel_inport_idx_tmp[2];
+      //     sel_inport_idx_vld[2] = sel_inport_idx_vld_tmp[2];
+      //   end
+      //   2'b10: begin
+      //     sel_inport_idx[0]     = sel_inport_idx_tmp[1];
+      //     sel_inport_idx_vld[0] = sel_inport_idx_vld_tmp[1];
+      //     sel_inport_idx[1]     = sel_inport_idx_tmp[2];
+      //     sel_inport_idx_vld[1] = sel_inport_idx_vld_tmp[2];
+      //     sel_inport_idx[2]     = sel_inport_idx_tmp[0];
+      //     sel_inport_idx_vld[2] = sel_inport_idx_vld_tmp[0];
+      //   end
+      //   default: begin
+      //     sel_inport_idx     = sel_inport_idx_tmp;
+      //     sel_inport_idx_vld = sel_inport_idx_vld_tmp;
+      //   end
+      // endcase
+    end
+  end else begin: gen_priority_outport_idx_error
+    $fatal("NumOut > 3, this is not supported yet by the age matrix.");
+  end
+`endif
 
   logic [NumOut-1:0][NumInp-1:0] sel_inport_idx_sel_mask;
   logic [NumOut-1:0][$clog2(NumInp)-1:0] sel_inport_idx_sel_mask_bin;
