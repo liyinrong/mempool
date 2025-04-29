@@ -78,10 +78,10 @@ l2_sim_type ?= sram
 axi_width_interleaved ?= 16
 
 # Enable SPM bank id remapping inside of each tile
-spm_bank_id_remap ?= 1
+spm_bank_id_remap ?= 0
 
 # Enable tile id remapping inside of each group
-tile_id_remap ?= 1
+tile_id_remap ?= 0
 
 # Enable separating tile local interconnect into intra-tile and inter-tile
 separate_local_resp_interco ?= 1

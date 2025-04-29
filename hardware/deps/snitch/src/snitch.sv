@@ -97,6 +97,10 @@ module snitch
   localparam int RegNrReadPorts = ((snitch_pkg::XPULPIMG) || (snitch_pkg::ZFINX)) ? 3 : 2;
   localparam logic [RegWidth-1:0] SP = 2;
   localparam int OutstandingWfi = 8;
+  
+  localparam int ShadowRegWidth = 3;
+  localparam int ShadowRegNrReadPorts  = 2; // 2 read ports for shadow registers
+  localparam int ShadowRegNrWritePorts = 1; // 1 write port for shadow registers
 
   logic illegal_inst;
   logic zero_lsb;
@@ -135,6 +139,19 @@ module snitch
   logic [RegNrWritePorts-1:0]               gpr_we;
   logic [2**RegWidth-1:0]                   sb_d, sb_q;
 
+  // Use shadow registers
+  logic is_shadow_rs1, is_shadow_rs2, is_shadow_rd;
+  logic [ShadowRegNrReadPorts-1:0][ShadowRegWidth-1:0]  sr_raddr;
+  logic [ShadowRegNrReadPorts-1:0][31:0]                sr_rdata;
+  logic [ShadowRegNrWritePorts-1:0][ShadowRegWidth-1:0] sr_waddr;
+  logic [ShadowRegNrWritePorts-1:0][31:0]               sr_wdata;
+  logic [ShadowRegNrWritePorts-1:0]                     sr_we;
+  logic [2**ShadowRegWidth-1:0]                         sr_sb_d, sr_sb_q;
+
+  // mux between shadow and normal registers
+  logic [RegNrReadPorts-1:0][31:0]                reg_rdata_selected;
+
+
   // Load/Store Defines
   logic is_load, is_store, is_signed, is_postincr;
   logic is_fp_load, is_fp_store;
@@ -170,6 +187,9 @@ module snitch
   logic lsu_empty;
   logic [RegWidth-1:0] lsu_rd;
   logic [31:0] lsu_qaddr;
+  
+  logic [(RegWidth-1)+1:0] lsu_rd_ext; // highest 1 bit mark if it is a shadow register
+  logic                    lsu_rd_is_shadow; // mark if it is a shadow register
 
   logic retire_load; // retire a load instruction
   logic retire_p; // retire from post-increment instructions
@@ -224,6 +244,7 @@ module snitch
   `FFAR(wfi_q, wfi_d, '0, clk_i, rst_i)
   `FFAR(wake_up_q, wake_up_d, '0, clk_i, rst_i)
   `FFAR(sb_q, sb_d, '0, clk_i, rst_i)
+  `FFAR(sr_sb_q, sr_sb_d, '0, clk_i, rst_i)
   if (snitch_pkg::ZFINX) begin
     `FFAR(fcsr_q, fcsr_d, '0, clk_i, rst_i)
     assign fpu_rnd_mode_o = fcsr_q.frm;
@@ -240,9 +261,9 @@ module snitch
 
   assign acc_qid_o = rd;
   assign acc_qdata_op_o = inst_data_i;
-  assign acc_qdata_arga_o = {{32{gpr_rdata[0][31]}}, gpr_rdata[0]};
-  assign acc_qdata_argb_o = {{32{gpr_rdata[1][31]}}, gpr_rdata[1]};
-  assign acc_qdata_argc_o = {{32{gpr_rdata[2][31]}}, gpr_rdata[2]};
+  assign acc_qdata_arga_o = {{32{reg_rdata_selected[0][31]}}, reg_rdata_selected[0]};
+  assign acc_qdata_argb_o = {{32{reg_rdata_selected[1][31]}}, reg_rdata_selected[1]};
+  assign acc_qdata_argc_o = {{32{reg_rdata_selected[2][31]}}, reg_rdata_selected[2]};
 
   // instruction fetch interface
   assign inst_addr_o = pc_q;
@@ -259,26 +280,36 @@ module snitch
 
   always_comb begin
     sb_d = sb_q;
-    if (retire_load) sb_d[lsu_rd] = 1'b0;
+    if (retire_load && !lsu_rd_is_shadow) sb_d[lsu_rd] = 1'b0;
     // only place the reservation if we actually executed the load or offload instruction
-    if ((is_load | acc_register_rd) && !stall && !exception) sb_d[rd] = 1'b1;
+    if ((is_load | acc_register_rd) && !stall && !exception && !is_shadow_rd) sb_d[rd] = 1'b1;
     if (retire_acc) sb_d[acc_pid_i[RegWidth-1:0]] = 1'b0;
     sb_d[0] = 1'b0;
   end
+  
+  always_comb begin
+    sr_sb_d = sr_sb_q;
+    if (retire_load && lsu_rd_is_shadow) sr_sb_d[lsu_rd[ShadowRegWidth-1:0]] = 1'b0;
+    // only place the reservation if we actually executed the load or offload instruction
+    if ((is_load | acc_register_rd) && !stall && !exception && is_shadow_rd) sr_sb_d[rd] = 1'b1;
+  end
+
   // TODO(zarubaf): This can probably be described a bit more efficient
-  assign opa_ready = (opa_select != Reg) | ~sb_q[rs1];
-  assign opb_ready = ((opb_select != Reg & opb_select != SImmediate) | ~sb_q[rs2]) & ((opb_select != RegRd) | ~sb_q[rd]);
+  assign opa_ready = (opa_select != Reg) | (is_shadow_rs1 ? ~sr_sb_q[rs1[ShadowRegWidth-1:0]] : ~sb_q[rs1]);
+  assign opb_ready = ((opb_select != Reg & opb_select != SImmediate) | (is_shadow_rs2 ? ~sr_sb_q[rs2[ShadowRegWidth-1:0]] : ~sb_q[rs2])) & 
+                     ((opb_select != RegRd) | (is_shadow_rd ? ~sr_sb_q[rd[ShadowRegWidth-1:0]] : ~sb_q[rd]));
   if (snitch_pkg::ZFINX) begin
     assign opc_ready = ((opc_select != Reg & opc_select != SImmediate) | ~sb_q[rs3]) & ((opc_select != RegRs2) | ~sb_q[rs2]);
   end else begin
-    assign opc_ready = ((opc_select != Reg) | ~sb_q[rd]) & ((opc_select != RegRs2) | ~sb_q[rs2]);
+    assign opc_ready = ((opc_select != Reg) | (is_shadow_rd ? ~sr_sb_q[rd[ShadowRegWidth-1:0]] : ~sb_q[rd])) & 
+                       ((opc_select != RegRs2) | (is_shadow_rs2 ? ~sr_sb_q[rs2[ShadowRegWidth-1:0]] : ~sb_q[rs2]));
   end
   assign operands_ready = opa_ready & opb_ready & opc_ready;
 
   // either we are not using the destination register or we need to make
   // sure that its destination operand is not marked busy in the scoreboard.
-  assign dstrd_ready = ~uses_rd | (uses_rd & ~sb_q[rd]);
-  assign dstrs1_ready = ~uses_rs1 | (uses_rs1 & ~sb_q[rs1]);
+  assign dstrd_ready = ~uses_rd | (uses_rd & (is_shadow_rd ? ~sr_sb_q[rd[ShadowRegWidth-1:0]] : ~sb_q[rd]));
+  assign dstrs1_ready = ~uses_rs1 | (uses_rs1 & (is_shadow_rs1 ? ~sr_sb_q[rs1[ShadowRegWidth-1:0]] : ~sb_q[rs1]));
   assign dst_ready = dstrd_ready & dstrs1_ready;
 
   assign valid_instr = (inst_ready_i & inst_valid_o) & operands_ready & dst_ready;
@@ -368,6 +399,10 @@ module snitch
     is_signed = 1'b0;
     ls_size = Byte;
     ls_amo = AMONone;
+
+    is_shadow_rs1 = 1'b0;
+    is_shadow_rs2 = 1'b0;
+    is_shadow_rd = 1'b0;
 
     acc_qvalid_o = 1'b0;
     acc_qaddr_o = snitch_pkg::XPULP_IPU;
@@ -1450,6 +1485,23 @@ module snitch
           illegal_inst = 1'b1;
         end
       end
+      riscv_instr::P_LW_IRPOST_S: begin  // Xpulpimg: p.lw.s, use shadow registers for prefetching
+        if (snitch_pkg::XPULPIMG) begin
+          write_rd = 1'b0;
+          uses_rd = 1'b1;
+          write_rs1 = 1'b1;
+          is_load = 1'b1;
+          is_postincr = 1'b1;
+          is_signed = 1'b1;
+          ls_size = Word;
+          opa_select = Reg;
+          opb_select = IImmediate;
+          acc_qaddr_o = snitch_pkg::XPULP_IPU;
+          is_shadow_rd = 1'b1; // put the data in shadow registers
+        end else begin
+          illegal_inst = 1'b1;
+        end
+      end
       riscv_instr::P_LB_RRPOST: begin  // Xpulpimg: p.lb rd,rs2(rs1!)
         if (snitch_pkg::XPULPIMG) begin
           write_rd = 1'b0;
@@ -1522,6 +1574,23 @@ module snitch
           opa_select = Reg;
           opb_select = Reg;
           acc_qaddr_o = snitch_pkg::XPULP_IPU;
+        end else begin
+          illegal_inst = 1'b1;
+        end
+      end
+      riscv_instr::P_LW_RRPOST_S: begin  // Xpulpimg: p.lw.s, use shadow registers for prefetching
+        if (snitch_pkg::XPULPIMG) begin
+          write_rd = 1'b0;
+          uses_rd = 1'b1;
+          write_rs1 = 1'b1;
+          is_load = 1'b1;
+          is_postincr = 1'b1;
+          is_signed = 1'b1;
+          ls_size = Word;
+          opa_select = Reg;
+          opb_select = Reg;
+          acc_qaddr_o = snitch_pkg::XPULP_IPU;
+          is_shadow_rd = 1'b1; // put the data in shadow registers
         end else begin
           illegal_inst = 1'b1;
         end
@@ -1946,6 +2015,22 @@ module snitch
           illegal_inst = 1'b1;
         end
       end
+      riscv_instr::P_MAC_S:  begin       // Xpulpimg: p.mac.s, use shadow registers for prefetching
+        if (snitch_pkg::XPULPIMG) begin
+          write_rd = 1'b0;
+          uses_rd = 1'b1;
+          acc_qvalid_o = valid_instr;
+          opa_select = Reg;
+          opb_select = Reg;
+          opc_select = Reg;
+          acc_register_rd = 1'b1;
+          acc_qaddr_o = snitch_pkg::XPULP_IPU;
+          is_shadow_rs1 = 1'b1; // put the data in shadow registers
+          is_shadow_rs2 = 1'b1; // put the data in shadow registers
+        end else begin
+          illegal_inst = 1'b1;
+        end
+      end
 
       // TODO(zarubaf): Illegal Instructions
       default: begin
@@ -1960,6 +2045,9 @@ module snitch
      write_rs1 = 1'b0;
      uses_rs1 = 1'b0;
      acc_qvalid_o = 1'b0;
+     is_shadow_rs1 = 1'b0;
+     is_shadow_rs2 = 1'b0;
+     is_shadow_rd  = 1'b0;
      next_pc = Exception;
     end
   end
@@ -2095,13 +2183,32 @@ module snitch
     .we_i      ( gpr_we    )
   );
 
+  snitch_regfile #(
+    .DATA_WIDTH     ( 32                    ),
+    .NR_READ_PORTS  ( ShadowRegNrReadPorts  ),
+    .NR_WRITE_PORTS ( ShadowRegNrWritePorts ),
+    .ZERO_REG_ZERO  ( 0                     ),
+    .ADDR_WIDTH     ( ShadowRegWidth        )
+  ) i_snitch_shadow_regfile (
+    .clk_i,
+    .raddr_i   ( sr_raddr  ),
+    .rdata_o   ( sr_rdata  ),
+    .waddr_i   ( sr_waddr  ),
+    .wdata_i   ( sr_wdata  ),
+    .we_i      ( sr_we     )
+  );
+
+  assign reg_rdata_selected[0] = is_shadow_rs1 ? sr_rdata[0] : gpr_rdata[0];
+  assign reg_rdata_selected[1] = is_shadow_rs2 ? sr_rdata[1] : gpr_rdata[1];
+  assign reg_rdata_selected[2] = gpr_rdata[2];
+
   // --------------------
   // Operand Select
   // --------------------
   always_comb begin
     unique case (opa_select)
       None: opa = '0;
-      Reg: opa = gpr_rdata[0];
+      Reg: opa = reg_rdata_selected[0];
       UImmediate: opa = uimm;
       JImmediate: opa = jimm;
       CSRImmediate: opa = {{{32-RegWidth}{1'b0}}, rs1};
@@ -2112,19 +2219,21 @@ module snitch
   always_comb begin
     unique case (opb_select)
       None: opb = '0;
-      Reg: opb = gpr_rdata[1];
+      Reg: opb = reg_rdata_selected[1];
       IImmediate: opb = iimm;
       SFImmediate, SImmediate: opb = simm;
       PC: opb = pc_q;
       CSR: opb = csr_rvalue;
       PBImmediate: opb = pbimm;
-      RegRd: opb = gpr_rdata[2];
+      RegRd: opb = reg_rdata_selected[2];
       default: opb = '0;
     endcase
   end
 
   assign gpr_raddr[0] = rs1;
   assign gpr_raddr[1] = rs2;
+  assign sr_raddr[0]  = rs1[ShadowRegWidth-1:0];
+  assign sr_raddr[1]  = rs2[ShadowRegWidth-1:0];
   // connect third read port only if present
   if (RegNrReadPorts >= 3) begin : gpr_raddr_2
     if (snitch_pkg::ZFINX) begin
@@ -2224,16 +2333,18 @@ module snitch
   // --------------------
   // LSU
   // --------------------
-  logic [RegWidth-1:0] lsu_qtag;
+  logic [(RegWidth-1)+1:0] lsu_qtag; // the highest bit to mark if its rd is shadow register
   logic [31:0] lsu_qdata;
 
   // Send the return register if it is a read or an AMO
-  assign lsu_qtag = (lsu_qvalid && (!is_store || ls_amo != AMONone)) ? rd : '0;
+  assign lsu_qtag = (lsu_qvalid && (!is_store || ls_amo != AMONone)) ? {is_shadow_rd, rd} : '0;
   // Send the data if it is a write or an AMO
-  assign lsu_qdata = (lsu_qvalid && (is_store || ls_amo != AMONone)) ? gpr_rdata[1] : '0;
+  assign lsu_qdata = (lsu_qvalid && (is_store || ls_amo != AMONone)) ? reg_rdata_selected[1] : '0;
 
+  assign lsu_rd           = lsu_rd_ext[RegWidth-1:0];
+  assign lsu_rd_is_shadow = lsu_rd_ext[RegWidth];
   snitch_lsu #(
-    .tag_t               ( logic[RegWidth-1:0]                ),
+    .tag_t               ( logic[(RegWidth-1)+1:0]            ),
     .NumOutstandingLoads ( snitch_pkg::NumIntOutstandingLoads )
   ) i_snitch_lsu (
     .clk_i                                ,
@@ -2248,7 +2359,7 @@ module snitch
     .lsu_qvalid_i ( lsu_qvalid            ),
     .lsu_qready_o ( lsu_qready            ),
     .lsu_pdata_o  ( ld_result             ),
-    .lsu_ptag_o   ( lsu_rd                ),
+    .lsu_ptag_o   ( lsu_rd_ext            ),
     .lsu_perror_o (                       ), // ignored for the moment
     .lsu_pvalid_o ( lsu_pvalid            ),
     .lsu_pready_i ( lsu_pready            ),
@@ -2269,7 +2380,7 @@ module snitch
   );
 
   // address can be alu_result (i.e. rs1 + iimm/simm) or rs1 (for post-increment load/stores)
-  assign lsu_qaddr = lsu_qvalid ? (is_postincr ? gpr_rdata[0] : alu_result) : '0;
+  assign lsu_qaddr = lsu_qvalid ? (is_postincr ? reg_rdata_selected[0] : alu_result) : '0;
 
   assign lsu_qvalid = valid_instr & (is_load | is_store) & ~(ld_addr_misaligned | st_addr_misaligned);
 
@@ -2337,6 +2448,11 @@ module snitch
       retire_acc = 1'b0;
       retire_load = 1'b0;
 
+      // Note(zexin): the shadow register write-back is only used for p.lw.s (P_LW_RRPOST_S, shadow reg as rd)
+      sr_we[0]    = 1'b0;
+      sr_waddr[0] = lsu_rd[ShadowRegWidth-1:0];
+      sr_wdata[0] = ld_result[31:0];
+
       if (retire_i | retire_p) begin
         gpr_we[0] = 1'b1;
       end else begin
@@ -2344,9 +2460,11 @@ module snitch
         lsu_pready = 1'b1;
         if (lsu_pvalid) begin
           retire_load = 1'b1;
-          gpr_we[0] = 1'b1;
+          gpr_we[0] = ~lsu_rd_is_shadow;
           gpr_waddr[0] = lsu_rd;
           gpr_wdata[0] = ld_result[31:0];
+
+          sr_we[0]    = lsu_rd_is_shadow;
         end else if (acc_pvalid_i) begin
           // if we are not retiring another instruction retire the accelerated one now
           retire_acc = 1'b1;
@@ -2374,11 +2492,18 @@ module snitch
       retire_acc = 1'b0;
       retire_load = 1'b0;
 
+      // Note(zexin): the shadow register write-back is only used for p.lw.s (P_LW_RRPOST_S, shadow reg as rd)
+      sr_we[0]    = 1'b0;
+      sr_waddr[0] = lsu_rd[ShadowRegWidth-1:0];
+      sr_wdata[0] = ld_result[31:0];
+
       if (retire_i | retire_p) begin
         gpr_we[0] = 1'b1;
         if (lsu_pvalid) begin
           retire_load = 1'b1;
-          gpr_we[1] = 1'b1;
+          gpr_we[1] = ~lsu_rd_is_shadow;
+
+          sr_we[0] = lsu_rd_is_shadow;
         end else if (acc_pvalid_i) begin
           retire_acc = 1'b1;
           gpr_we[1] = 1'b1;
@@ -2397,7 +2522,9 @@ module snitch
         end
         if (lsu_pvalid) begin
           retire_load = 1'b1;
-          gpr_we[1] = 1'b1;
+          gpr_we[1] = ~lsu_rd_is_shadow;
+
+          sr_we[0] = lsu_rd_is_shadow;
         end
       end
     end
@@ -2452,7 +2579,7 @@ module snitch
     `FFLAR(ld_instr_q, inst_data_i, latch_load, '0, clk_i, rst_i)
     `FFLAR(ld_addr_q, data_qaddr_o, latch_load, '0, clk_i, rst_i)
     `FFLAR(rs1_q, rs1, latch_load, '0, clk_i, rst_i)
-    `FFLAR(rs1_data_q, gpr_rdata[0], latch_load, '0, clk_i, rst_i)
+    `FFLAR(rs1_data_q, reg_rdata_selected[0], latch_load, '0, clk_i, rst_i)
     `FFLAR(pc_qq, pc_d, latch_load, '0, clk_i, rst_i)
     `FFLAR(ld_addr_misaligned_q, ld_addr_misaligned, latch_load, '0, clk_i, rst_i)
 
@@ -2470,9 +2597,9 @@ module snitch
                                                                    | instr_addr_misaligned
                                                                    | st_addr_misaligned;
     assign rvfi_rs1_addr[0]  = (retire_load_port1) ? rs1_q : rs1;
-    assign rvfi_rs1_rdata[0] = (retire_load_port1) ? rs1_data_q : gpr_rdata[0];
+    assign rvfi_rs1_rdata[0] = (retire_load_port1) ? rs1_data_q : reg_rdata_selected[0];
     assign rvfi_rs2_addr[0]  = (retire_load_port1) ? '0 : rs2;
-    assign rvfi_rs2_rdata[0] = (retire_load_port1) ? '0 : gpr_rdata[1];
+    assign rvfi_rs2_rdata[0] = (retire_load_port1) ? '0 : reg_rdata_selected[1];
     assign rvfi_rd_addr[0]   = (retire_load_port1) ? lsu_rd : ((gpr_we[0] && write_rd) ? rd : '0);
     assign rvfi_rd_wdata[0]  = (retire_load_port1) ? (lsu_rd != 0 ? ld_result[31:0] : '0) : (rd != 0 && gpr_we[0] && write_rd) ? gpr_wdata[0] : 0;
     assign rvfi_pc_rdata[0]  = (retire_load_port1) ? pc_qq : pc_q;

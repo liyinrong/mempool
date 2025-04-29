@@ -11,7 +11,7 @@ package snitch_pkg;
   localparam StrbWidth                  = DataWidth/8;
   localparam int NumFPOutstandingLoads  = 4;
   // Use a high number of outstanding loads, if running a latency-throughput analysis
-  localparam int NumIntOutstandingLoads = `ifdef TRAFFIC_GEN 2048 `else 8 `endif;
+  localparam int NumIntOutstandingLoads = `ifdef TRAFFIC_GEN 2048 `else 16 `endif;
   localparam MetaIdWidth                = idx_width(NumIntOutstandingLoads);
   // Xpulpimg extension enabled?
   localparam bit XPULPIMG = `ifdef XPULPIMG `XPULPIMG `else 1'bX `endif;

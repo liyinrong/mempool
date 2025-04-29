@@ -90,6 +90,7 @@ module snitch_ipu
       riscv_instr::P_CLIPR,               // Xpulpimg: p.clipr
       riscv_instr::P_CLIPUR,              // Xpulpimg: p.clipur
       riscv_instr::P_MAC,                 // Xpulpimg: p.mac
+      riscv_instr::P_MAC_S,               // Xpulpimg: p.mac.s
       riscv_instr::P_MSU,                 // Xpulpimg: p.msu
       riscv_instr::PV_ADD_H,              // Xpulpimg: pv.add.h
       riscv_instr::PV_ADD_SC_H,           // Xpulpimg: pv.add.sc.h
@@ -529,6 +530,12 @@ module dspu #(
         res_sel = Clip;
       end
       riscv_instr::P_MAC: begin
+        mac_op = MulMac;
+        mac_op_a_sign = 1'b1;
+        mac_op_b_sign = 1'b1;
+        res_sel = Mac;
+      end
+      riscv_instr::P_MAC_S: begin
         mac_op = MulMac;
         mac_op_a_sign = 1'b1;
         mac_op_b_sign = 1'b1;
